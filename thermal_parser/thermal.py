@@ -14,16 +14,22 @@ The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
 """
 
+import glob
 import os
 import re
 import platform
 import subprocess
 import sys
+import warnings
 from ctypes import *
+from functools import partial
 from io import BufferedIOBase, BytesIO
+from multiprocessing import Pool
 from typing import BinaryIO, Dict, List, Optional, Tuple, Union
 
+import click
 import numpy as np
+import tifffile
 from PIL import Image
 
 __all__ = [
@@ -366,6 +372,66 @@ def parse_raw_data(stream: BinaryIO, metadata: Tuple[int, int, int, int]):
 ABSOLUTE_ZERO = 273.15
 
 
+def _save_to_tiff(data: np.ndarray, output_path: str) -> None:
+    """Save temperature data to a TIFF file.
+
+    Args:
+        data: Temperature array to save
+        output_path: Path to the output TIFF file
+    """
+    tifffile.imwrite(
+        output_path,
+        np.array(data, dtype=np.float32),
+        metadata={'axes': 'ZYX'},
+        photometric='minisblack'
+    )
+
+
+def _process_single_file(
+    filepath: str,
+    output_dir: str,
+    output_format: str,
+    move_exif: bool,
+    thermal_dtype,
+    exiftool_path: str,
+) -> Optional[str]:
+    """Process a single file (designed for multiprocessing worker).
+
+    Returns output path on success, None on failure.
+    """
+    try:
+        thermal = Thermal(dtype=thermal_dtype)
+
+        data = thermal.parse(filepath)
+
+        base_name = os.path.splitext(os.path.basename(filepath))[0]
+        if output_format in ('float32', 'npy'):
+            output_path = os.path.join(output_dir, base_name + '.npy')
+            np.save(output_path, data)
+        else:  # tiff
+            output_path = os.path.join(output_dir, base_name + '.tiff')
+            _save_to_tiff(data, output_path)
+
+        # Transfer EXIF metadata if requested
+        if move_exif:
+            subprocess.Popen(
+                [
+                    exiftool_path,
+                    '-ignoreMinorErrors',
+                    '-TagsFromFile', filepath,
+                    '-all:all',
+                    output_path
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            ).communicate()
+
+        return output_path
+    except Exception as e:
+        warnings.warn(f"Failed to process {filepath}: {e}")
+        return None
+
+
 class Thermal:
     # Camera Model Name
     DJI_XT2 = 'XT2'
@@ -538,6 +604,8 @@ class Thermal:
                 * unsupported camera type
         """
 
+        _ensure_library_path()
+
         assert isinstance(filepath_image, str) and os.path.exists(filepath_image), f'Check if the file exists: {filepath_image}.'
         meta = subprocess.Popen([self._filepath_exiftool, filepath_image], stdout=subprocess.PIPE).communicate()[0]
         meta = meta.decode('utf8').replace('\r', '')
@@ -625,6 +693,45 @@ class Thermal:
                 **kwargs,
             )
         raise NotImplementedError
+
+    def parse_to_tiff(
+            self,
+            filepath_image: str,
+            tiff_output_file: str = None,
+    ) -> np.ndarray:
+        """
+        Parse infrared camera data and save to a TIFF file.
+
+        Args:
+            filepath_image: str, relative path of R-JPEG image
+            tiff_output_file: str, optional output path for the TIFF file.
+                If not specified, uses the input filename with .tiff extension.
+
+        Returns:
+            np.ndarray: temperature array (in the dtype set during __init__)
+        """
+        data = self.parse(filepath_image)
+
+        if tiff_output_file is None:
+            base, _ = os.path.splitext(filepath_image)
+            tiff_output_file = base + '.tiff'
+
+        _save_to_tiff(data, tiff_output_file)
+
+        # Transfer EXIF metadata from source to output TIFF
+        subprocess.Popen(
+            [
+                self._filepath_exiftool,
+                '-ignoreMinorErrors',
+                '-TagsFromFile', filepath_image,
+                '-all:all',
+                tiff_output_file
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        ).communicate()
+
+        return data
 
     def parse_flir(
             self,
@@ -836,3 +943,182 @@ class Thermal:
         assert self._dirp_destroy(handle) == Thermal.DIRP_SUCCESS
 
         return np.array(temp, dtype=self._dtype)
+
+    def process(
+        self,
+        input_path: str,
+        output_dir: Optional[str] = None,
+        output_format: Optional[str] = 'tiff',
+        num_workers: int = 1,
+        move_exif: bool = True,
+    ) -> Union[np.ndarray, List[str]]:
+        """
+        Process thermal image(s) with support for batch processing directories.
+
+        Args:
+            input_path: Path to a single image file OR a directory containing thermal images
+            output_dir: Output directory (optional)
+                - For single file: defaults to same directory as input
+                - For directory: defaults to `{input_dir}_processed/`
+            output_format: Output format - 'tiff' (default) or 'float32'/'npy' for numpy files
+            num_workers: Number of parallel workers (used when input is a directory)
+            move_exif: Whether to transfer EXIF metadata to output files
+
+        Returns:
+            - For single file: np.ndarray of temperature data
+            - For directory: List of successfully processed output file paths
+        """
+        input_path = os.path.abspath(input_path)
+
+        if os.path.isfile(input_path):
+
+            if output_dir is None:
+                output_dir = os.path.dirname(input_path)
+            os.makedirs(output_dir, exist_ok=True)
+
+            data = self.parse(input_path)
+
+            base_name = os.path.splitext(os.path.basename(input_path))[0]
+            if output_format in ('float32', 'npy'):
+                output_path = os.path.join(output_dir, base_name + '.npy')
+                np.save(output_path, data)
+            else:  # tiff
+                output_path = os.path.join(output_dir, base_name + '.tiff')
+                _save_to_tiff(data, output_path)
+
+            # Transfer EXIF metadata if requested
+            if move_exif:
+                subprocess.Popen(
+                    [
+                        self._filepath_exiftool,
+                        '-ignoreMinorErrors',
+                        '-TagsFromFile', input_path,
+                        '-all:all',
+                        output_path
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                ).communicate()
+
+            return data
+
+        elif os.path.isdir(input_path):
+
+            if output_dir is None:
+                output_dir = input_path.rstrip(os.sep) + '_processed'
+            os.makedirs(output_dir, exist_ok=True)
+
+            patterns = ['*.jpg', '*.jpeg', '*.JPG', '*.JPEG']
+            files = []
+            for pattern in patterns:
+                files.extend(glob.glob(os.path.join(input_path, pattern)))
+            files = list(set(files))  # Remove duplicates
+
+            if not files:
+                warnings.warn(f"No JPEG files found in {input_path}")
+                return []
+
+            if num_workers > 1:
+                worker_func = partial(
+                    _process_single_file,
+                    output_dir=output_dir,
+                    output_format=output_format,
+                    move_exif=move_exif,
+                    thermal_dtype=self._dtype,
+                    exiftool_path=self._filepath_exiftool,
+                )
+                with Pool(num_workers) as pool:
+                    results = pool.map(worker_func, files)
+            else:
+                results = []
+                for filepath in files:
+                    result = _process_single_file(
+                        filepath=filepath,
+                        output_dir=output_dir,
+                        output_format=output_format,
+                        move_exif=move_exif,
+                        thermal_dtype=self._dtype,
+                        exiftool_path=self._filepath_exiftool,
+                    )
+                    results.append(result)
+
+            successful_outputs = [r for r in results if r is not None]
+            return successful_outputs
+
+        else:
+            raise ValueError(f"Input path does not exist: {input_path}")
+
+
+def _ensure_library_path():
+    """Ensure DJI SDK library path is set. Re-execs on Linux if needed."""
+    system = platform.system()
+    if system not in ('Linux', 'Windows'):
+        return
+
+    # Get SDK library directory
+    folder_plugin = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'plugins')
+    architecture = "x64" if platform.architecture()[0] == "64bit" else "x86"
+    sdk_lib_dir = os.path.join(
+        folder_plugin,
+        'dji_thermal_sdk_v1.7_20241205',
+        system.lower(),
+        f'release_{architecture}'
+    )
+
+    if not os.path.isdir(sdk_lib_dir):
+        return
+
+    if system == 'Linux':
+        # Check if SDK path is already in LD_LIBRARY_PATH
+        ld_path = os.environ.get('LD_LIBRARY_PATH', '')
+        if sdk_lib_dir in ld_path.split(os.pathsep):
+            return
+
+        # Set LD_LIBRARY_PATH and re-exec
+        new_ld_path = sdk_lib_dir + os.pathsep + ld_path if ld_path else sdk_lib_dir
+        os.environ['LD_LIBRARY_PATH'] = new_ld_path
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    elif system == 'Windows':
+        # On Windows, use os.add_dll_directory (Python 3.8+) and also add to PATH
+        if hasattr(os, 'add_dll_directory'):
+            os.add_dll_directory(sdk_lib_dir)
+        # Also add to PATH for older Python or subprocess calls
+        path = os.environ.get('PATH', '')
+        if sdk_lib_dir not in path.split(os.pathsep):
+            os.environ['PATH'] = sdk_lib_dir + os.pathsep + path
+
+
+@click.command()
+@click.argument('input_path', type=click.Path(exists=True))
+@click.option('--output-dir', '-o', type=click.Path(), default=None,
+              help='Output directory (defaults to input directory or {input}_processed/)')
+@click.option('--output-format', '-f', type=click.Choice(['tiff', 'npy']), default='tiff',
+              help='Output format: tiff or npy')
+@click.option('--num-workers', '-w', type=int, default=1,
+              help='Number of parallel workers for batch processing')
+@click.option('--move-exif/--no-move-exif', default=True,
+              help='Transfer EXIF metadata to output files (default: enabled)')
+@click.option('--dtype', '-d', type=click.Choice(['float32', 'int16']), default='float32',
+              help='Data type for temperature values')
+def cli(input_path, output_dir, output_format, num_workers, move_exif, dtype):
+    """Process thermal images from FLIR/DJI cameras.
+
+    INPUT_PATH: Path to a single image file or directory of images.
+    """
+    _ensure_library_path()
+
+    dtype_map = {'float32': np.float32, 'int16': np.int16}
+    thermal = Thermal(dtype=dtype_map[dtype])
+    result = thermal.process(
+        input_path=input_path,
+        output_dir=output_dir,
+        output_format=output_format,
+        num_workers=num_workers,
+        move_exif=move_exif,
+    )
+    # Print summary
+    if isinstance(result, list):
+        click.echo(f"Processed {len(result)} files to {output_dir or 'default directory'}")
+    else:
+        click.echo(f"Processed single file, shape: {result.shape}")

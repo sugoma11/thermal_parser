@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "thermal_parser"
+version = "20240826"
+description = "FLIR/DJI IR Camera Data Parser, Python Version"
+authors = [{name = "SanNianYiSi", email = "CcoO296y@163.com"}]
+license = "MIT"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy",
+    "Pillow",
+    "tifffile",
+    "click",
+]
+classifiers = [
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Natural Language :: Chinese (Simplified)",
+    "Natural Language :: English",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+]
+
+[project.urls]
+Homepage = "https://github.com/SanNianYiSi/thermal_parser"
+
+[project.scripts]
+thermal-parser = "thermal_parser.thermal:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["thermal_parser", "plugins"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "thermal_parser/",
+    "plugins/",
+    "README.md",
+    "LICENSE",
+]

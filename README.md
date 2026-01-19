@@ -4,13 +4,31 @@ Parser infrared camera data as `NumPy` data.
 
 ![image](./images/image.jpg)
 
-## Usage
+## Installation
 
-* Clone this respository and `cd thermal_parser`. 
-* Run `pip setup.py install` in the console.
-* Try the following code:
+```bash
+git clone git@github.com:sugoma11/thermal_parser.git;
+cd thermal_parser;
+uv sync;
+```
 
-**win x64, x86 & linux x64, x86**
+## CLI Usage
+
+```bash
+# Process single file
+uv run thermal-parser images/DJI_H20T.jpg
+
+# Process directory with 4 workers
+uv run thermal-parser images/M2EA -w 4
+
+# Output as numpy, int16 dtype
+uv run thermal-parser images/DJI_H20T.jpg -f npy -d int16
+
+# See all options
+uv run thermal-parser --help
+```
+
+## Python API
 
 ```python
 import numpy as np
@@ -50,7 +68,7 @@ DJI R-JPEG Camera Model DTAT3.0
 
 ## References
 
-* [DJI Thermal SDK](https://www.dji.com/cn/downloads/softwares/dji-thermal-sdk) The DJI Thermal SDK enables you to process R-JPEG (Radiometric JPEG) images which were captured by DJI infrared camera products. 
+* [DJI Thermal SDK](https://www.dji.com/cn/downloads/softwares/dji-thermal-sdk) The DJI Thermal SDK enables you to process R-JPEG (Radiometric JPEG) images which were captured by DJI infrared camera products.
 * [Thermal Image Analysis](https://github.com/detecttechnologies/Thermal-Image-Analysis) A tool for analyzing and annotating thermal images.
 * [Base codes for Thermography](https://github.com/detecttechnologies/thermal_base) A python package for decoding and common processing for thermographs / thermograms
 * [thermography](https://github.com/cdeldon/thermography) This repository contains the implementation of a feasibility study for automatic detection of defected solar panel modules.
