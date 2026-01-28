@@ -9,12 +9,15 @@ description = "FLIR/DJI IR Camera Data Parser, Python Version"
 authors = [{name = "SanNianYiSi", email = "CcoO296y@163.com"}]
 license = "MIT"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 dependencies = [
-    "numpy",
-    "Pillow",
-    "tifffile",
-    "click",
+    "click>=8.3.1",
+    "jupyter>=1.1.1",
+    "matplotlib>=3.10.8",
+    "notebook>=7.5.3",
+    "numpy<2",
+    "pillow>=12.1.0",
+    "tifffile>=2025.5.10",
 ]
 classifiers = [
     "Intended Audience :: Developers",

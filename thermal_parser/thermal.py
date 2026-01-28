@@ -515,13 +515,14 @@ class Thermal:
             self._filepath_exiftool,
         ) = get_default_filepaths()
 
+        _ensure_sdk_libs()
+
         try:
             self._dll_dirp = CDLL(self._filepath_dirp)
             self._dll_dirp_sub = CDLL(self._filepath_dirp_sub)
             self._dll_iirp = CDLL(self._filepath_iirp)
-        except OSError:
-            print('Unable to load the system C library')
-            sys.exit()
+        except OSError as e:
+            raise OSError(f'Unable to load DJI Thermal SDK libraries: {e}') from e
 
         # NOTE: The following code is for dji_thermal_sdk_v1.0
         # # Register SDK for the application.
@@ -603,8 +604,6 @@ class Thermal:
                 * field missing
                 * unsupported camera type
         """
-
-        _ensure_library_path()
 
         assert isinstance(filepath_image, str) and os.path.exists(filepath_image), f'Check if the file exists: {filepath_image}.'
         meta = subprocess.Popen([self._filepath_exiftool, filepath_image], stdout=subprocess.PIPE).communicate()[0]
@@ -1049,13 +1048,27 @@ class Thermal:
             raise ValueError(f"Input path does not exist: {input_path}")
 
 
-def _ensure_library_path():
-    """Ensure DJI SDK library path is set. Re-execs on Linux if needed."""
-    system = platform.system()
-    if system not in ('Linux', 'Windows'):
+_sdk_libs_loaded = False
+
+
+def _ensure_sdk_libs():
+    """Pre-load all DJI SDK shared libraries so dependencies resolve correctly.
+
+    On Linux, loads all .so files from the SDK directory with RTLD_GLOBAL so
+    that libraries like libv_hirp.so can find libMicroJPEG_Release_x64.so etc.
+    without needing LD_LIBRARY_PATH to be set before process start.
+
+    On Windows, registers the SDK directory via os.add_dll_directory and PATH.
+    """
+    global _sdk_libs_loaded
+    if _sdk_libs_loaded:
         return
 
-    # Get SDK library directory
+    system = platform.system()
+    if system not in ('Linux', 'Windows'):
+        _sdk_libs_loaded = True
+        return
+
     folder_plugin = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'plugins')
     architecture = "x64" if platform.architecture()[0] == "64bit" else "x86"
     sdk_lib_dir = os.path.join(
@@ -1069,28 +1082,26 @@ def _ensure_library_path():
         return
 
     if system == 'Linux':
-        # Check if SDK path is already in LD_LIBRARY_PATH
-        ld_path = os.environ.get('LD_LIBRARY_PATH', '')
-        if sdk_lib_dir in ld_path.split(os.pathsep):
-            return
-
-        # Set LD_LIBRARY_PATH and re-exec
-        new_ld_path = sdk_lib_dir + os.pathsep + ld_path if ld_path else sdk_lib_dir
-        os.environ['LD_LIBRARY_PATH'] = new_ld_path
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        import glob as _glob
+        for so_path in sorted(_glob.glob(os.path.join(sdk_lib_dir, '*.so*'))):
+            try:
+                CDLL(so_path, mode=2 | 256)  # RTLD_NOW | RTLD_GLOBAL
+            except OSError:
+                pass  # non-critical helper libs may fail; main ones checked later
 
     elif system == 'Windows':
-        # On Windows, use os.add_dll_directory (Python 3.8+) and also add to PATH
         if hasattr(os, 'add_dll_directory'):
             os.add_dll_directory(sdk_lib_dir)
-        # Also add to PATH for older Python or subprocess calls
         path = os.environ.get('PATH', '')
         if sdk_lib_dir not in path.split(os.pathsep):
             os.environ['PATH'] = sdk_lib_dir + os.pathsep + path
 
+    _sdk_libs_loaded = True
+
 
 @click.command()
-@click.argument('input_path', type=click.Path(exists=True))
+@click.option('--input-path', type=click.Path(exists=True), required=True,
+              help='Input directory with files / single JPG')
 @click.option('--output-dir', '-o', type=click.Path(), default=None,
               help='Output directory (defaults to input directory or {input}_processed/)')
 @click.option('--output-format', '-f', type=click.Choice(['tiff', 'npy']), default='tiff',
@@ -1106,8 +1117,6 @@ def cli(input_path, output_dir, output_format, num_workers, move_exif, dtype):
 
     INPUT_PATH: Path to a single image file or directory of images.
     """
-    _ensure_library_path()
-
     dtype_map = {'float32': np.float32, 'int16': np.int16}
     thermal = Thermal(dtype=dtype_map[dtype])
     result = thermal.process(
@@ -1119,6 +1128,6 @@ def cli(input_path, output_dir, output_format, num_workers, move_exif, dtype):
     )
     # Print summary
     if isinstance(result, list):
-        click.echo(f"Processed {len(result)} files to {output_dir or 'default directory'}")
+        click.echo(f"Processed {len(result)} files to {output_dir or (input_path.rstrip('/') + '_processed')}")
     else:
         click.echo(f"Processed single file, shape: {result.shape}")

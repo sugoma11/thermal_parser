@@ -6,11 +6,24 @@ Parser infrared camera data as `NumPy` data.
 
 ## Installation
 
+0. This package is managed by uv. [Uv installation](https://docs.astral.sh/uv/getting-started/installation/#__tabbed_1_1).
+
+1. User installation (create venv before):
+```bash
+uv pip install https://github.com/sugoma11/thermal_parser.git;
+# pip install https://github.com/sugoma11/thermal_parser.git # if you prefer just pip
+```
+
+2. For development:
 ```bash
 git clone git@github.com:sugoma11/thermal_parser.git;
 cd thermal_parser;
 uv sync;
+# pip install -e . # if you prefer just pip
 ```
+
+## Quick start
+See the [Jupyter Notebook examples](./quick_start.ipynb).
 
 ## CLI Usage
 
